@@ -14,14 +14,10 @@ class stellar_system:
         self.state = np.transpose(self.history)[-1]
 
     def trajectory(self):
-        xs = self.history[0]
-        ys = self.history[1]
-        xe = self.history[6]
-        ye = self.history[7]
-        xl = self.history[12]
-        yl = self.history[13]
-        plt.plot(xs,ys,color = 'black')    
-        plt.plot(xe,ye, color = 'red')
-        plt.plot(xl,yl, color = 'blue')
+        N = int(len(self.state)/6)
+        for k in range(N):
+            x = self.history[6*k]
+            y = self.history[6*k+1]
+            plt.plot(x,y)    
         plt.show()
         
