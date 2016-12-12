@@ -48,7 +48,7 @@ def runge_kutta(x,tk,dt):
     K3 = f(x+(dt/2)*K2,tk+(dt/2),dt)
     K4 = f(x+dt*K3,tk+dt,dt)
     phi = (1/6)*(K1 + 2*K2 + 2*K3 + K4)
-    return f(x,tk,dt)
+    return phi
 
 
 #Stellar system model#

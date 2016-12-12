@@ -20,9 +20,7 @@ class stellar_system:
         ye = self.history[7]
         xl = self.history[12]
         yl = self.history[13]
-        plt.plot(xs,ys,color = 'black')
-        plt.show()
-    
+        plt.plot(xs,ys,color = 'black')    
         plt.plot(xe,ye, color = 'red')
         plt.plot(xl,yl, color = 'blue')
         plt.show()
