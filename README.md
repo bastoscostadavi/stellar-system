@@ -1,6 +1,6 @@
-# Stellar System Dynamics Simulation
+# Stellar System (2D) — Minimal N‑body Simulation
 
-A Python-based N-body gravitational simulation that models the dynamics of celestial bodies in stellar systems using numerical integration methods.
+A tiny, self‑contained Python simulation of 2D N‑body gravity with RK4 integration, static trajectory plots, and simple animation.
 
 ## Overview
 
@@ -8,42 +8,30 @@ This project implements a gravitational N-body problem solver using the 4th-orde
 
 ## Features
 
-- **N-body gravitational simulation**: Supports any number of celestial bodies
-- **4th-order Runge-Kutta integration**: High-precision numerical solver with O(dt⁴) accuracy
-- **Orbital trajectory visualization**: Plots the paths of celestial bodies over time
-- **Flexible initial conditions**: Easy setup of different stellar system configurations
-- **Pre-configured scenarios**: Sun-Earth-Moon system and other planetary configurations
+- 2D N‑body gravitational simulation (Newtonian, pairwise forces)
+- 4th‑order Runge–Kutta (RK4) fixed‑step integrator
+- Static trajectory plotting and simple 2D animation
+- Minimal API: positions, velocities, masses in SI units
 
 ## Project Structure
 
 ```
 stellar_system/
-├── README.md              # This file
-├── stellar_system.py      # Main simulation class
-├── numerical_methods.py   # Numerical integration and physics engine
-└── test.py               # Example scenarios and test cases
+├── README.md
+├── stellar_system.py   # Single-file implementation (class + plotting + animation)
+└── test.py            # Small examples (2D)
 ```
 
-## Core Components
+## API
 
-### `stellar_system.py`
-The main simulation class that manages:
-- System state (positions, velocities, masses)
-- Time evolution through numerical integration
-- Trajectory plotting and visualization
-
-### `numerical_methods.py`
-Contains the physics engine with:
-- **EDO function**: Ordinary Differential Equation solver
-- **Runge-Kutta method**: 4th-order numerical integration scheme
-- **Gravitational model**: Implementation of Newton's law of gravitation
-
-### `test.py`
-Provides example scenarios:
-- `three()`: Sun-Earth-Moon system
-- `four()`: Sun-Earth-Mars-Moon system
-- `five()`: Extended system with Mercury
-- `four_plus_intruder()`: System with an additional massive body
+All in `stellar_system.py`:
+- Class `stellar_system(positions, velocities, masses)`
+  - `positions`: list of `(x, y)` in meters
+  - `velocities`: list of `(vx, vy)` in m/s
+  - `masses`: list of masses in kg
+  - `change(total_time, steps=1000)`: integrate with RK4
+  - `trajectory()`: plot static trajectories
+  - `animate(interval=30, trail=None)`: animate motion with optional trailing path
 
 ## Installation
 
@@ -63,44 +51,25 @@ pip install numpy matplotlib
 
 ## Usage
 
-### Basic Example
+### Basic Example (2D)
 ```python
 import numpy as np
 from stellar_system import stellar_system
 
-# Define initial conditions [x1,y1,z1,vx1,vy1,vz1,...,xN,yN,zN,vxN,vyN,vzN,m1,m2,...,mN]
-# Positions in meters, velocities in m/s, masses in kg
-initial_state = [
-    # Sun at origin
-    0, 0, 0, 0, 0, 0,
-    # Earth at 1.5e11 m with orbital velocity
-    1.5e11, 0, 0, 0, 29780, 0,
-    # Masses: Sun, Earth
-    1.989e30, 5.972e24
+# Sun–Earth in the plane (meters, m/s, kg)
+positions = [
+    (0.0, 0.0),
+    (1.5e11, 0.0),
 ]
+velocities = [
+    (0.0, 0.0),
+    (0.0, 29780.0),
+]
+masses = [1.989e30, 5.972e24]
 
-# Create system
-system = stellar_system(initial_state)
-
-# Simulate for 1 year (≈31.5M seconds) with 10000 time steps
-system.change(3.15e7, 10000)
-
-# Plot trajectories
-system.trajectory()
-```
-
-### Pre-configured Scenarios
-```python
-from test import three, four, five
-
-# Run Sun-Earth-Moon simulation
-sun_earth_moon = three()
-
-# Run Sun-Earth-Mars-Moon simulation
-four()
-
-# Run extended system with Mercury
-five()
+s = stellar_system(positions, velocities, masses)
+s.change(3.15e7, 2000)  # ~1 year, 2000 steps
+s.animate(interval=30)
 ```
 
 ## Mathematical Foundation
@@ -125,14 +94,9 @@ The 4th-order Runge-Kutta method provides high accuracy:
 
 ## Input Format
 
-The initial state vector format is:
-```
-[x₁, y₁, z₁, vₓ₁, vᵧ₁, vᵤ₁, ..., xₙ, yₙ, zₙ, vₓₙ, vᵧₙ, vᵤₙ, m₁, m₂, ..., mₙ]
-```
-
-- First 6N elements: positions and velocities (3D coordinates for N bodies)
-- Last N elements: masses of the N bodies
-- Units: meters, m/s, kg
+- Positions: `[(x1, y1), ..., (xN, yN)]` in meters
+- Velocities: `[(vx1, vy1), ..., (vxN, vyN)]` in m/s
+- Masses: `[m1, ..., mN]` in kg
 
 ## Physical Constants
 
@@ -152,15 +116,17 @@ The initial state vector format is:
 
 ## Contributing
 
-This appears to be an educational/research project. When contributing:
-1. Maintain the existing code structure and conventions
-2. Add documentation for new features
-3. Include test cases for new scenarios
-4. Follow the existing Portuguese/English comment style
+- Keep it simple; avoid extra abstractions unless necessary
+- Include small, runnable scenarios in `test.py`
 
 ## License
 
 No explicit license specified. Contact the project author for usage rights.
+
+## Design Notes
+
+- The implementation is intentionally minimal and 2D-only.
+- RK4 with fixed step is used for clarity; small steps improve stability.
 
 ## References
 
