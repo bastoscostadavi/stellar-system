@@ -2,6 +2,15 @@
 
 Generate artistic visualizations of gravitational N-body dynamics using dimensionless physics simulations.
 
+## Example
+
+<p align="center">
+  <img src="paintings/system_n20_seed17_points.png" width="400">
+  <img src="paintings/system_n20_seed17_painting.png" width="400">
+  <br>
+  <em>20-body system: Initial configuration (left) and trajectory evolution (right)</em>
+</p>
+
 ## Overview
 
 This project creates paired visualizations of gravitational systems:
