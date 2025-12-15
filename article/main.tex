@@ -65,17 +65,17 @@ t_{\text{dyn}} \sim \sqrt{\frac{r^3}{GM}}
 
 \subsection{Mass Distribution}
 
-Individual masses are drawn from a log-uniform distribution:
+Individual masses are drawn from a uniform distribution:
 \begin{equation}
-\log_{10} m_i \sim \mathcal{U}(0, \log_{10} \lambda)
+m_i \sim \mathcal{U}(0, 1)
 \end{equation}
-where $\lambda$ is the mass ratio (default: $\lambda = 10$). Masses are then normalized:
+Masses are then normalized:
 \begin{equation}
 m_i \gets \frac{m_i}{\sum_{j=1}^N m_j}
 \end{equation}
 ensuring $\sum m_i = 1$.
 
-\textbf{Rationale}: Log-uniform distribution samples the large dynamic range of astrophysical mass ratios (e.g., planetary systems, stellar clusters) while ensuring reasonable diversity.
+\textbf{Rationale}: Uniform distribution provides a simple baseline where all mass scales are equally likely. This creates systems with similar-sized bodies, suitable for studying collective dynamics without hierarchical structure.
 
 \subsection{Position Distribution}
 
@@ -122,38 +122,64 @@ The RK4 method provides a good balance between accuracy ($\mathcal{O}(\Delta t^4
 
 \subsection{Initial Points Image}
 
-Bodies are rendered as Gaussian spots with radii proportional to $\log_{10} m_i$:
+Bodies are rendered as Gaussian spots with radii linearly proportional to mass:
 \begin{equation}
-r_{\text{dot}, i} = r_{\min} + (r_{\max} - r_{\min}) \cdot \frac{\log_{10} m_i - \log_{10} m_{\min}}{\log_{10} m_{\max} - \log_{10} m_{\min}}
+r_{\text{line}, i} = 1 + 2Nm_i \quad \text{(pixels)}
 \end{equation}
-where $r_{\min} = 2$ pixels, $r_{\max} = 10$ pixels.
+\begin{equation}
+r_{\text{dot}, i} = 1.3 \times r_{\text{line}, i} \quad \text{(pixels)}
+\end{equation}
+where $N$ is the number of bodies. The factor $2N$ ensures that line thickness scales with the system size, and dots are 30\% larger than trajectory lines for visibility.
 
 \textbf{Coordinate frame}: Centered at the center of mass, with extent $\pm 1.25 \times r_{\max}$ where $r_{\max} = \max_i |\mathbf{r}_i - \mathbf{r}_{\text{COM}}|$.
 
 \subsection{Trajectory Painting}
 
-Trajectories are rendered by accumulating intensity along each body's path. At each time step $k$, we add a Gaussian spot with:
+\subsubsection{Spatial Resampling}
 
-\textbf{Line width}: Proportional to mass (25\% of initial dot size):
+To ensure brightness is proportional to velocity (not timestep density), trajectories are resampled with uniform spatial spacing:
+
+\begin{enumerate}
+\item \textbf{Arc length parameterization}: For each body's trajectory $\mathbf{r}_i(t)$, compute cumulative arc length:
 \begin{equation}
-r_{\text{line}, i} = 0.25 \times r_{\text{dot}, i}
+s_k = \sum_{j=0}^{k-1} |\mathbf{r}_{i,j+1} - \mathbf{r}_{i,j}|
 \end{equation}
 
-\textbf{Intensity}: Proportional to $\log_{10} |\mathbf{v}_i|$, normalized and scaled:
+\item \textbf{Uniform spatial sampling}: Resample at uniform intervals $\Delta s = 0.001$ (world units):
 \begin{equation}
-I_{k,i} = 0.3 \times \frac{\log_{10} |\mathbf{v}_{k,i}| - \log_{10} v_{\min}}{\log_{10} v_{\max} - \log_{10} v_{\min}}
+s_{\text{sample}} = 0, \Delta s, 2\Delta s, \ldots, s_{\text{total}}
 \end{equation}
-where $v_{\min} = 1.0$ avoids $\log(0)$ and the factor $0.3$ limits maximum brightness to 30\%.
 
-\textbf{Final positions}: Overlaid as white dots (same size as initial points) with black outlines for contrast.
+\item \textbf{Interpolation}: Linearly interpolate positions $\mathbf{r}(s)$ and velocities $\mathbf{v}(s)$ at each sample point.
+\end{enumerate}
 
-\textbf{Rationale}:
+\textbf{Rationale}: Fast segments naturally have more sample points (long path length), slow segments have fewer. Brightness becomes proportional to velocity magnitude, independent of timestep density.
+
+\subsubsection{Rendering}
+
+\textbf{Line width}: Same as initial points:
+\begin{equation}
+r_{\text{line}, i} = 1 + 2Nm_i \quad \text{(pixels)}
+\end{equation}
+
+\textbf{Intensity}: Sigmoid mapping of velocity magnitude:
+\begin{equation}
+I(v) = \frac{1}{1 + e^{-v}}
+\end{equation}
+where $v$ is velocity in dimensionless units. Range: $[0.5, 1.0]$ for $v \in [0, \infty)$.
+
+\textbf{Blending}:
 \begin{itemize}
-\item Logarithmic scaling captures wide velocity range (slow $\to$ fast motion)
-\item Lower intensity (30\%) keeps paintings from saturating
-\item Thinner lines prevent visual clutter
-\item Additive accumulation shows trajectory density
+\item \textit{Within trajectory}: Maximum (no accumulation) $\to$ clean, velocity-based intensity
+\item \textit{Between trajectories}: Additive, capped at 1.0 $\to$ natural brightening at crossings
 \end{itemize}
+
+\textbf{Gaussian rendering}: Each sample point rendered as:
+\begin{equation}
+w(\mathbf{x}) = I(v) \cdot \exp\left(-\frac{|\mathbf{x} - \mathbf{r}|^2}{2r_{\text{line}}^2}\right)
+\end{equation}
+
+\textbf{Final positions}: Overlaid as white dots ($r_{\text{final}} = 1.2 \times r_{\text{line}}$) with black outlines for contrast.
 
 \section{Data Generation for Neural Networks}
 
@@ -221,11 +247,15 @@ Our simulation framework leverages the scale-invariance of Newtonian gravity to 
 \begin{enumerate}
 \item Dimensionless units ($G=1$, $M=1$) ensure scale-invariance
 \item Zero initial velocities simplify input and produce interesting collapse dynamics
-\item Log-scaling (mass $\to$ size, velocity $\to$ intensity) captures wide dynamic ranges
+\item Uniform mass distribution creates systems with similar-sized bodies
+\item Spatial resampling ensures brightness $\propto$ velocity (not timestep density)
+\item Linear mass-to-radius mapping: $r = 1 + 2Nm$ (pixels)
+\item Sigmoid velocity-to-intensity mapping: $I = 1/(1 + e^{-v})$
+\item Hybrid blending: maximum within trajectories, additive between trajectories
 \item High-resolution rendering ($2048^2$) preserves fine trajectory details
-\item Systematic naming convention enables organized dataset management
+\item Separated workflow: simulation generation and visualization are independent
 \end{enumerate}
 
-This approach is optimized for training neural networks to learn gravitational dynamics from static initial conditions.
+This approach produces clean, physically accurate visualizations where trajectory brightness directly reflects velocity magnitude, enabling effective training of neural networks to learn gravitational dynamics.
 
 \end{document}
