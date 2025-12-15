@@ -1,0 +1,231 @@
+\documentclass[11pt]{article}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{Gravitational Painting: \\ N-Body Simulations in Dimensionless Units}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+We present a systematic approach to generating training data for neural networks that learn gravitational N-body dynamics. Our method produces paired images: initial conditions (point configurations) and their temporal evolution (trajectory paintings), enabling machine learning models to predict dynamical outcomes from static initial states.
+
+\section{Dimensionless Units and Scaling Symmetry}
+
+\subsection{Newtonian Gravity Scaling}
+
+The equations of motion for N-body gravitational systems are:
+\begin{equation}
+\ddot{\mathbf{r}}_i = -G \sum_{j \neq i} \frac{m_j (\mathbf{r}_i - \mathbf{r}_j)}{|\mathbf{r}_i - \mathbf{r}_j|^3}
+\end{equation}
+
+These equations exhibit a scaling symmetry under the transformation:
+\begin{equation}
+m \to \lambda_m m, \quad \mathbf{r} \to \lambda_r \mathbf{r}, \quad t \to \lambda_t t
+\end{equation}
+provided the constraint
+\begin{equation}
+\frac{\lambda_m}{\lambda_r^3} = \lambda_t^{-2}
+\end{equation}
+is satisfied. This implies that the dimensionless quantity $G m t^2 / r^3$ is invariant under rescaling.
+
+\subsection{Choice of Units}
+
+This scaling symmetry allows us to fix any two of the three scales (mass, length, time), with the third determined by the constraint. We adopt the standard convention in N-body simulations:
+
+\begin{itemize}
+\item \textbf{Gravitational constant}: $G = 1$
+\item \textbf{Total mass}: $M = \sum_{i=1}^N m_i = 1$
+\item \textbf{Length scale}: Characteristic radius $\sim 1$
+\end{itemize}
+
+Time is then measured in dynamical units:
+\begin{equation}
+t_{\text{dyn}} \sim \sqrt{\frac{r^3}{GM}}
+\end{equation}
+
+\textbf{Benefits}:
+\begin{itemize}
+\item All simulations are directly comparable in the same units
+\item No arbitrary physical scales (kg, meters, seconds)
+\item Physics is universal and scale-invariant
+\item Optimal for neural network training (normalized inputs/outputs)
+\end{itemize}
+
+\section{Initial Conditions}
+
+\subsection{Mass Distribution}
+
+Individual masses are drawn from a log-uniform distribution:
+\begin{equation}
+\log_{10} m_i \sim \mathcal{U}(0, \log_{10} \lambda)
+\end{equation}
+where $\lambda$ is the mass ratio (default: $\lambda = 10$). Masses are then normalized:
+\begin{equation}
+m_i \gets \frac{m_i}{\sum_{j=1}^N m_j}
+\end{equation}
+ensuring $\sum m_i = 1$.
+
+\textbf{Rationale}: Log-uniform distribution samples the large dynamic range of astrophysical mass ratios (e.g., planetary systems, stellar clusters) while ensuring reasonable diversity.
+
+\subsection{Position Distribution}
+
+Positions are uniformly distributed in a disk of unit radius:
+\begin{align}
+\theta_i &\sim \mathcal{U}(0, 2\pi) \\
+r_i &\sim \sqrt{\mathcal{U}(0, 1)} \\
+\mathbf{r}_i &= r_i (\cos\theta_i, \sin\theta_i)
+\end{align}
+
+The $\sqrt{r}$ scaling ensures uniform density in the disk (area element $\propto r \, dr$).
+
+\subsection{Velocity Distribution}
+
+All bodies start with \textbf{zero initial velocity}:
+\begin{equation}
+\mathbf{v}_i(t=0) = \mathbf{0}, \quad \forall i
+\end{equation}
+
+\textbf{Rationale}: This represents a ``cold start'' or gravitational collapse scenario, where the system begins from rest and evolves purely under mutual gravitational attraction. This choice:
+\begin{itemize}
+\item Simplifies the initial state (positions and masses only)
+\item Produces interesting, non-trivial dynamics (collapse, close encounters, ejections)
+\item Reduces the input space for the neural network
+\end{itemize}
+
+\section{Numerical Integration}
+
+We use the 4th-order Runge-Kutta (RK4) method to integrate the equations of motion:
+\begin{equation}
+\mathbf{r}_i(t + \Delta t), \, \mathbf{v}_i(t + \Delta t) = \text{RK4}(\mathbf{r}_i(t), \mathbf{v}_i(t), \Delta t)
+\end{equation}
+
+\textbf{Parameters}:
+\begin{itemize}
+\item Simulation time: $T = 50$ (dynamical units, default)
+\item Number of steps: $N_{\text{steps}} = 10{,}000$ (default)
+\item Time step: $\Delta t = T / N_{\text{steps}} = 0.005$
+\end{itemize}
+
+The RK4 method provides a good balance between accuracy ($\mathcal{O}(\Delta t^4)$ per step) and computational efficiency.
+
+\section{Visualization}
+
+\subsection{Initial Points Image}
+
+Bodies are rendered as Gaussian spots with radii proportional to $\log_{10} m_i$:
+\begin{equation}
+r_{\text{dot}, i} = r_{\min} + (r_{\max} - r_{\min}) \cdot \frac{\log_{10} m_i - \log_{10} m_{\min}}{\log_{10} m_{\max} - \log_{10} m_{\min}}
+\end{equation}
+where $r_{\min} = 2$ pixels, $r_{\max} = 10$ pixels.
+
+\textbf{Coordinate frame}: Centered at the center of mass, with extent $\pm 1.25 \times r_{\max}$ where $r_{\max} = \max_i |\mathbf{r}_i - \mathbf{r}_{\text{COM}}|$.
+
+\subsection{Trajectory Painting}
+
+Trajectories are rendered by accumulating intensity along each body's path. At each time step $k$, we add a Gaussian spot with:
+
+\textbf{Line width}: Proportional to mass (25\% of initial dot size):
+\begin{equation}
+r_{\text{line}, i} = 0.25 \times r_{\text{dot}, i}
+\end{equation}
+
+\textbf{Intensity}: Proportional to $\log_{10} |\mathbf{v}_i|$, normalized and scaled:
+\begin{equation}
+I_{k,i} = 0.3 \times \frac{\log_{10} |\mathbf{v}_{k,i}| - \log_{10} v_{\min}}{\log_{10} v_{\max} - \log_{10} v_{\min}}
+\end{equation}
+where $v_{\min} = 1.0$ avoids $\log(0)$ and the factor $0.3$ limits maximum brightness to 30\%.
+
+\textbf{Final positions}: Overlaid as white dots (same size as initial points) with black outlines for contrast.
+
+\textbf{Rationale}:
+\begin{itemize}
+\item Logarithmic scaling captures wide velocity range (slow $\to$ fast motion)
+\item Lower intensity (30\%) keeps paintings from saturating
+\item Thinner lines prevent visual clutter
+\item Additive accumulation shows trajectory density
+\end{itemize}
+
+\section{Data Generation for Neural Networks}
+
+\subsection{Dataset Structure}
+
+Each sample consists of a paired image set:
+\begin{itemize}
+\item \textbf{Input}: Initial points image (positions + masses)
+\item \textbf{Output}: Trajectory painting (evolved dynamics)
+\end{itemize}
+
+Files are named: \texttt{prefix\_n\{N\}\_seed\{S\}\_\{points|painting\}.png}
+
+\subsection{Recommended Dataset Sizes}
+
+\begin{itemize}
+\item \textbf{Proof of concept}: 500--1,000 examples per $N$
+\item \textbf{Production training}: 5,000--10,000 examples per $N$
+\item \textbf{Large-scale}: 20,000--50,000 examples for $N \geq 10$
+\end{itemize}
+
+\textbf{Note}: Train separate models for each $N$ or include $N$ as an input feature, since complexity scales as $\mathcal{O}(N^2)$.
+
+\subsection{Data Augmentation}
+
+The physics is rotationally invariant, enabling augmentation:
+\begin{itemize}
+\item Random rotations by $\theta \in [0, 2\pi)$
+\item Horizontal/vertical flips
+\item Effectively multiplies dataset size by $\sim 8$
+\end{itemize}
+
+\section{Neural Network Architecture Considerations}
+
+\textbf{Input}: $2048 \times 2048$ grayscale image (initial points)
+
+\textbf{Output}: $2048 \times 2048$ grayscale image (trajectory painting)
+
+\textbf{Recommended architectures}:
+\begin{itemize}
+\item U-Net: Standard for image-to-image translation
+\item Conditional GAN (pix2pix): For realistic texture generation
+\item Physics-informed neural networks: Incorporate gravitational constraints
+\end{itemize}
+
+\textbf{Loss functions}:
+\begin{itemize}
+\item L1 or L2 pixel-wise loss
+\item Perceptual loss (VGG features)
+\item Adversarial loss (if using GAN)
+\end{itemize}
+
+\section{Computational Details}
+
+\textbf{Image resolution}: $2048 \times 2048$ pixels (grayscale, 8-bit)
+
+\textbf{Rendering optimization}: Local bounding boxes around each trajectory point (3$\sigma$ cutoff) reduce computation from $\mathcal{O}(N \cdot N_{\text{steps}} \cdot W \cdot H)$ to $\mathcal{O}(N \cdot N_{\text{steps}} \cdot r^2)$ where $r \ll \min(W, H)$.
+
+\textbf{Typical generation time}: $\sim$20--60 seconds per sample (depending on $N$ and $N_{\text{steps}}$).
+
+\section{Summary}
+
+Our simulation framework leverages the scale-invariance of Newtonian gravity to produce a universal, dimensionless dataset of N-body dynamics. Key design choices:
+
+\begin{enumerate}
+\item Dimensionless units ($G=1$, $M=1$) ensure scale-invariance
+\item Zero initial velocities simplify input and produce interesting collapse dynamics
+\item Log-scaling (mass $\to$ size, velocity $\to$ intensity) captures wide dynamic ranges
+\item High-resolution rendering ($2048^2$) preserves fine trajectory details
+\item Systematic naming convention enables organized dataset management
+\end{enumerate}
+
+This approach is optimized for training neural networks to learn gravitational dynamics from static initial conditions.
+
+\end{document}

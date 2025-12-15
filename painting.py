@@ -1,259 +1,329 @@
-#!/usr/bin/env python3
-"""Create a static 2D plot of N-body trajectories.
+"""Visualization module for gravitational systems.
 
-Defaults to an Earth–Sun–Moon setup if no inputs are provided.
-
-Usage examples:
-  # Default Earth–Sun–Moon
-  python painting.py
-
-  # Custom explicit inputs
-  python painting.py -t 1e7 -n 4000 \
-      --positions "0,0;1.5e11,0;1.504e11,0" \
-      --velocities "0,0;0,29780;0,30780" \
-      --masses "2e30,6e24,7.3e22"
-
-  # Random N bodies, equal masses, at rest
-  python painting.py --random 6 --mass 6e24 --spread 1e11 -t 1e7 -n 4000
-
-  # Random N plus a heavy central body at the origin
-  python painting.py --random 20 --mass 6e24 --spread 1e11 \
-      --central-mass 1e28 --animate -n 10000
-
-  # Random N with randomized masses (uniform range)
-  python painting.py --random 20 --mass-min 1e24 --mass-max 1e26 --spread 1e11 --animate -n 10000
-
-  # Random N with log-uniform masses over a range
-  python painting.py --random 20 --mass-min 1e22 --mass-max 1e28 --log-uniform-mass --spread 1e11 --animate -n 10000
-
-  # Add an equilateral triangle of 3 bodies (additional),
-  # velocities pointing to the next vertex so each draws one side
-  python painting.py --random 20 --mass 6e24 --spread 1e11 --add-triangle --animate -n 10000
+Creates paired images:
+1. Initial state: white dots showing positions (size ∝ log(mass))
+2. Gravitational painting: trajectories with intensity ∝ log(velocity)
 """
 
-import argparse
-import os
-from datetime import datetime
-from typing import List, Tuple
-
 import numpy as np
-
-from stellar_system import stellar_system
-
-
-G = 6.67428e-11  # m^3 kg^-1 s^-2
+from typing import Tuple, Optional
+from gravitational_system import gravitational_system
 
 
-def _parse_pairs(s: str) -> List[Tuple[float, float]]:
-    pairs = []
-    for part in s.split(';'):
-        part = part.strip()
-        if not part:
+def compute_frame(positions: np.ndarray, masses: np.ndarray) -> Tuple[np.ndarray, float]:
+    """Compute coordinate frame centered at center of mass.
+
+    Returns:
+        com: center of mass (2,)
+        scale: half-width of the grid = 1.25 * max_distance
+    """
+    com = np.sum(positions * masses[:, None], axis=0) / np.sum(masses)
+    centered = positions - com
+    max_dist = np.max(np.linalg.norm(centered, axis=1))
+    scale = 1.25 * max_dist
+    return com, scale
+
+
+def world_to_pixel(positions: np.ndarray, com: np.ndarray, scale: float,
+                   resolution: int = 512) -> np.ndarray:
+    """Convert world coordinates to pixel coordinates.
+
+    Frame: [-scale, scale] × [-scale, scale] maps to [0, resolution] × [0, resolution]
+    Origin (com) is at center of image.
+    """
+    centered = positions - com
+    # Normalize to [-1, 1]
+    normalized = centered / scale
+    # Map to [0, resolution], with y-axis flipped for image coordinates
+    pixels = np.zeros_like(normalized)
+    pixels[:, 0] = (normalized[:, 0] + 1.0) * resolution / 2.0
+    pixels[:, 1] = (1.0 - normalized[:, 1]) * resolution / 2.0  # flip y
+    return pixels
+
+
+def render_initial_points(positions: np.ndarray, masses: np.ndarray,
+                         resolution: int = 512) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Render initial positions as white dots (size ∝ log(mass)).
+
+    Returns:
+        image: (resolution, resolution) array in [0, 1]
+        com: center of mass
+        scale: frame half-width
+    """
+    com, scale = compute_frame(positions, masses)
+    image = np.zeros((resolution, resolution), dtype=float)
+
+    # Convert to pixel coordinates
+    pixels = world_to_pixel(positions, com, scale, resolution)
+
+    # Draw each body
+    N = len(masses)
+    # Power law scaling for more diversity: masses² amplifies differences
+    line_radii = 1 + 2*N*masses
+    radii = 1.3 * line_radii  # dots slightly bigger
+
+    # Create coordinate grids
+    y, x = np.ogrid[:resolution, :resolution]
+
+    for i in range(N):
+        px, py = pixels[i]
+        if not (0 <= px < resolution and 0 <= py < resolution):
+            continue  # skip if outside frame
+
+        # Compute distance from this body's center
+        dist = np.sqrt((x - px)**2 + (y - py)**2)
+        # Add Gaussian spot
+        mask = dist <= 3 * radii[i]  # limit to 3σ for efficiency
+        image[mask] += np.exp(-0.5 * (dist[mask] / radii[i])**2)
+
+    return image, com, scale
+
+
+def render_gravitational_painting(system: gravitational_system,
+                                  com: np.ndarray, scale: float,
+                                  resolution: int = 512,
+                                  v_min: float = 0.001,
+                                  masses: np.ndarray = None) -> np.ndarray:
+    """Render trajectory painting with log-velocity intensity.
+
+    Args:
+        system: gravitational_system with history computed
+        com: center of mass for coordinate frame
+        scale: frame half-width
+        resolution: image size
+        v_min: minimum velocity for log scale (to avoid log(0)) - use 0.001 for dimensionless units
+
+    Returns:
+        image: (resolution, resolution) array in [0, 1]
+    """
+    if system.history is None:
+        raise ValueError("System has no history. Call system.change() first.")
+
+    history = system.history  # shape: (steps+1, N, 2)
+    steps, N, _ = history.shape
+
+    # Compute velocities at each timestep
+    dt = system._dt
+    velocities = np.zeros((steps - 1, N, 2))
+    for k in range(steps - 1):
+        velocities[k] = (history[k + 1] - history[k]) / dt
+
+    # Compute velocity magnitudes
+    v_mag = np.linalg.norm(velocities, axis=2)  # (steps-1, N)
+
+    #line radii (average mass is 1/N, so 2*N*masses is about 2, for an average mass).
+    line_radii = 1 + 2*N*masses
+
+    # Render each body to separate image (maximum within trajectory)
+    # Then combine bodies additively (sum at crossings)
+    body_images = []
+
+    # Process each body separately
+    for i in range(N):
+        body_image = np.zeros((resolution, resolution), dtype=float)
+        trajectory = history[:, i, :]  # (steps, 2)
+
+        # Compute cumulative arc length along trajectory
+        segments = np.diff(trajectory, axis=0)  # (steps-1, 2)
+        seg_lengths = np.linalg.norm(segments, axis=1)  # (steps-1,)
+        cumulative_length = np.concatenate([[0], np.cumsum(seg_lengths)])  # (steps,)
+        total_length = cumulative_length[-1]
+
+        if total_length < 1e-10:  # Skip stationary bodies
             continue
-        x_str, y_str = part.split(',')
-        pairs.append((float(x_str), float(y_str)))
-    return pairs
+
+        # Create uniform samples in arc length (spatial sampling)
+        # Smaller spacing = smoother, more continuous appearance
+        sample_spacing = 0.001  # uniform spacing in world units (reduced for continuity)
+        n_samples = int(total_length / sample_spacing)
+        if n_samples < 2:
+            continue
+
+        uniform_arc_lengths = np.linspace(0, total_length, n_samples)
+
+        # Interpolate positions at uniform arc lengths
+        sampled_x = np.interp(uniform_arc_lengths, cumulative_length, trajectory[:, 0])
+        sampled_y = np.interp(uniform_arc_lengths, cumulative_length, trajectory[:, 1])
+        sampled_positions = np.column_stack([sampled_x, sampled_y])
+
+        # Interpolate velocity magnitudes at uniform arc lengths
+        # Velocities are defined at segment midpoints in arc length space
+        velocity_arc_lengths = (cumulative_length[:-1] + cumulative_length[1:]) / 2
+        velocity_mags = v_mag[:, i]  # (steps-1,)
+        sampled_v_mag = np.interp(uniform_arc_lengths, velocity_arc_lengths, velocity_mags)
+
+        # Compute intensity for each sample (bounded [0.5, 1.0])
+        sampled_intensities = 1 / (1 + np.exp(-sampled_v_mag))
+
+        # No scaling needed with maximum blending (no accumulation)
+
+        # Get radius for this body
+        radius = line_radii[i]
+
+        # Convert to pixel coordinates
+        pixels = world_to_pixel(sampled_positions, com, scale, resolution)
+
+        # Render each resampled point
+        for j in range(n_samples):
+            px, py = pixels[j]
+            if not (0 <= px < resolution and 0 <= py < resolution):
+                continue
+
+            intensity = sampled_intensities[j]
+
+            # Compute only in local bounding box (more efficient)
+            px_int, py_int = int(px), int(py)
+            r_int = int(np.ceil(radius))
+
+            y_min = max(0, py_int - r_int)
+            y_max = min(resolution, py_int + r_int + 1)
+            x_min = max(0, px_int - r_int)
+            x_max = min(resolution, px_int + r_int + 1)
+
+            # Create local grid
+            y_local, x_local = np.ogrid[y_min:y_max, x_min:x_max]
+
+            # Compute distance from this point (only in local region)
+            dist = np.sqrt((x_local - px)**2 + (y_local - py)**2)
+
+            # Maximum blending: no accumulation along trajectory
+            # Each point shows local velocity-based intensity, no saturation artifacts
+            weights = intensity * np.exp(-0.5 * (dist / radius)**2)
+            body_image[y_min:y_max, x_min:x_max] = np.maximum(body_image[y_min:y_max, x_min:x_max], weights)
+
+        # Store this body's rendered trajectory
+        body_images.append(body_image)
+
+    # Combine all body images: additive at crossings, capped at 1.0
+    image = np.zeros((resolution, resolution), dtype=float)
+    for body_image in body_images:
+        image = np.minimum(1.0, image + body_image)
+
+    # Draw final positions as white dots (if masses provided)
+    if masses is not None:
+        # Simple continuous mapping: mass → radius (same as initial points)
+        radii = 1.2*line_radii
+
+        # Get final positions
+        final_positions = history[-1]
+        final_pixels = world_to_pixel(final_positions, com, scale, resolution)
+
+        # Create coordinate grids
+        y, x = np.ogrid[:resolution, :resolution]
+
+        for i in range(N):
+            px, py = final_pixels[i]
+            if not (0 <= px < resolution and 0 <= py < resolution):
+                continue
+
+            # Draw black outline (larger)
+            dist = np.sqrt((x - px)**2 + (y - py)**2)
+            outline_mask = dist <= radii[i] * 1.3
+            image[outline_mask] = 0  # Black outline
+
+            # Draw white dot on top
+            dot_mask = dist <= radii[i]
+            image[dot_mask] = 1.0  # White dot
+
+    return image
 
 
-def _parse_floats(s: str) -> List[float]:
-    return [float(tok.strip()) for tok in s.split(',') if tok.strip()]
+def save_image_pair(points_image: np.ndarray, painting_image: np.ndarray,
+                   filename_prefix: str):
+    """Save the paired images as PNG files.
+
+    Args:
+        points_image: initial points rendering
+        painting_image: trajectory painting
+        filename_prefix: e.g., "example" -> "example_points.png", "example_painting.png"
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError("PIL/Pillow is required for saving images. Install with: pip install pillow")
+
+    # Convert to uint8
+    points_uint8 = (points_image * 255).astype(np.uint8)
+    painting_uint8 = (painting_image * 255).astype(np.uint8)
+
+    # Save as grayscale images
+    Image.fromarray(points_uint8, mode='L').save(f"{filename_prefix}_points.png")
+    Image.fromarray(painting_uint8, mode='L').save(f"{filename_prefix}_painting.png")
+    print(f"Saved: {filename_prefix}_points.png, {filename_prefix}_painting.png")
 
 
-def default_earth_sun_moon():
-    sun_m = 2.0e30
-    earth_m = 6.0e24
-    moon_m = 7.3e22
+def create_painting_from_simulation(sim_file: str, resolution: int = 2048):
+    """Load a simulation and create paintings.
 
-    r_se = 1.5e11
-    r_em = 4.0e8
-    v_e = np.sqrt(G * sun_m / r_se)
-    v_m_rel = np.sqrt(G * earth_m / r_em)
+    Args:
+        sim_file: path to simulation NPZ file (e.g., "simulations/system_n5_seed123.npz")
+        resolution: image resolution (default: 2048)
 
-    positions = [
-        (0.0, 0.0),
-        (r_se, 0.0),
-        (r_se + r_em, 0.0),
-    ]
-    velocities = [
-        (0.0, 0.0),
-        (0.0, v_e),
-        (0.0, v_e + v_m_rel),
-    ]
-    masses = [sun_m, earth_m, moon_m]
-    total_time = 1.0e7
-    steps = 4000
-    return positions, velocities, masses, total_time, steps
+    Returns:
+        Tuple of (points_filename, painting_filename)
+    """
+    import os
+    from PIL import Image
 
+    # Load simulation data
+    data = np.load(sim_file)
+    positions = data['positions']
+    masses = data['masses']
+    history = data['history']
+    dt = data['dt']
+    N = int(data['N'])
+    seed = int(data['seed'])
 
-def main() -> None:
-    p = argparse.ArgumentParser(description="Static 2D N-body plot with grayscale speed and log-mass thickness")
-    p.add_argument("--positions", "-p", type=str, help="Semicolon-separated x,y pairs, e.g. '0,0;1.5e11,0'" )
-    p.add_argument("--velocities", "-v", type=str, help="Semicolon-separated vx,vy pairs" )
-    p.add_argument("--masses", "-m", type=str, help="Comma-separated masses, e.g. '2e30,6e24'" )
-    p.add_argument("--time", "-t", type=float, help="Total simulation time in seconds")
-    p.add_argument("--steps", "-n", type=int, help="Number of RK4 steps")
-    p.add_argument("--animate", action="store_true", help="Animate the painting process (build-up)")
-    p.add_argument("--interval", type=int, default=30, help="Animation frame interval in ms (with --animate)")
-    # Random configuration
-    p.add_argument("--random", type=int, metavar="N", help="Generate N bodies with equal mass at rest, random positions")
-    p.add_argument("--mass", type=float, default=6.0e24, help="Mass for each body when using --random (default: 6e24)")
-    p.add_argument("--spread", type=float, default=1.0e11, help="Spatial spread (radius) for random positions (default: 1e11)")
-    p.add_argument("--seed", type=int, help="Random seed for reproducibility when using --random")
-    p.add_argument("--central-mass", type=float, help="If set, adds one heavy body at the origin with zero velocity")
-    p.add_argument("--mass-min", type=float, help="Minimum mass for random bodies (use with --random)")
-    p.add_argument("--mass-max", type=float, help="Maximum mass for random bodies (use with --random)")
-    p.add_argument("--log-uniform-mass", action="store_true", help="Sample masses log-uniformly between --mass-min and --mass-max")
-    # Additional triangle bodies
-    p.add_argument("--add-triangle", action="store_true", help="Add 3 bodies in an equilateral triangle")
-    p.add_argument("--triangle-radius", type=float, help="Circumradius for triangle (default: spread/2 in random mode) in meters")
-    p.add_argument("--triangle-mass", type=float, help="Mass for each triangle body (default: equal mass or mean of masses)")
-    # Batch/save options
-    p.add_argument("--save-dir", type=str, help="If set, saves images to this directory")
-    p.add_argument("--runs", type=int, default=1, help="Number of images to generate (with --save-dir)")
-    p.add_argument("--dpi", type=int, default=300, help="DPI for saved images")
-    p.add_argument("--width", type=float, default=10.0, help="Figure width in inches")
-    p.add_argument("--height", type=float, default=10.0, help="Figure height in inches")
-    # Snapshot series (single initial condition, multiple times)
-    p.add_argument("--snapshots", type=int, help="If set, save N snapshots at t,2t,...,N*t")
-    p.add_argument("--snapshot-interval", type=float, help="Base time interval t for snapshots (seconds). If omitted, uses --time")
-    p.add_argument("--steps-per-snapshot", type=int, default=2000, help="RK4 steps per snapshot interval when using --snapshots")
-    args = p.parse_args()
+    # Reconstruct system object
+    s = gravitational_system(positions.tolist(), [[0, 0]] * len(masses), masses.tolist())
+    s.history = history
+    s._dt = dt
 
-    # If save options were provided
-    save_dir = getattr(args, 'save_dir', None)
-    runs = getattr(args, 'runs', 1)
-    dpi = getattr(args, 'dpi', 300)
-    width = getattr(args, 'width', 10.0)
-    height = getattr(args, 'height', 10.0)
+    # Build output filename from simulation filename
+    sim_basename = os.path.basename(sim_file).replace('.npz', '')
+    output_prefix = f"paintings/{sim_basename}"
 
-    save = save_dir is not None
-    if save:
-        os.makedirs(save_dir, exist_ok=True)
+    # Render images
+    points_img, com, scale = render_initial_points(positions, masses, resolution=resolution)
+    painting_img = render_gravitational_painting(s, com, scale, resolution=resolution, masses=masses)
 
-    base_seed = args.seed if args.seed is not None else None
-    total_runs = max(1, int(runs))
-    # Timestamp prefix to avoid overwriting existing images
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S") if save else None
-    for i in range(total_runs):
-        # Derive per-run seed if requested
-        seed_i = None if base_seed is None else base_seed + i
+    # Save as PNG
+    points_uint8 = (points_img * 255).astype(np.uint8)
+    painting_uint8 = (painting_img * 255).astype(np.uint8)
 
-        if args.random:
-            N = int(args.random)
-            rng = np.random.default_rng(seed_i)
-            r = args.spread * np.sqrt(rng.random(N))
-            theta = 2 * np.pi * rng.random(N)
-            positions = [(float(r[k] * np.cos(theta[k])), float(r[k] * np.sin(theta[k]))) for k in range(N)]
-            velocities = [(0.0, 0.0) for _ in range(N)]
-            # Masses: either equal or randomized
-            if args.mass_min is not None and args.mass_max is not None:
-                m_lo = float(args.mass_min)
-                m_hi = float(args.mass_max)
-                if not (m_lo > 0 and m_hi > 0 and m_hi >= m_lo):
-                    raise SystemExit("--mass-min and --mass-max must be positive, with max >= min")
-                if args.log_uniform_mass:
-                    masses = np.exp(rng.uniform(np.log(m_lo), np.log(m_hi), size=N)).tolist()
-                else:
-                    masses = rng.uniform(m_lo, m_hi, size=N).tolist()
-            else:
-                masses = [float(args.mass) for _ in range(N)]
-            if args.central_mass is not None and args.central_mass > 0:
-                positions.append((0.0, 0.0))
-                velocities.append((0.0, 0.0))
-                masses.append(float(args.central_mass))
-            if args.time:
-                total_time = float(args.time)
-            else:
-                Mtot = float(np.sum(masses))
-                R = float(args.spread)
-                total_time = float(np.sqrt(R**3 / (G * Mtot)))
-            steps = int(args.steps) if args.steps else 2000
-        elif args.positions or args.velocities or args.masses or args.time or args.steps:
-            if not (args.positions and args.velocities and args.masses and args.time):
-                raise SystemExit("When providing custom inputs, you must pass --positions, --velocities, --masses, and --time")
-            positions = _parse_pairs(args.positions)
-            velocities = _parse_pairs(args.velocities)
-            masses = _parse_floats(args.masses)
-            total_time = float(args.time)
-            steps = int(args.steps) if args.steps else 2000
-        else:
-            positions, velocities, masses, total_time, steps = default_earth_sun_moon()
+    points_file = f"{output_prefix}_points.png"
+    painting_file = f"{output_prefix}_painting.png"
 
-        # Optionally add triangle bodies
-        if args.add_triangle:
-            if args.triangle_radius is not None:
-                Rtri = float(args.triangle_radius)
-            elif args.random:
-                Rtri = float(args.spread) * 0.5
-            else:
-                xs0 = [p[0] for p in positions]
-                ys0 = [p[1] for p in positions]
-                Rtri = 0.5 * float(max(max(map(abs, xs0)), max(map(abs, ys0)), 1.0))
-            angles = np.deg2rad([0.0, 120.0, 240.0])
-            tri_pos = [(float(Rtri * np.cos(a)), float(Rtri * np.sin(a))) for a in angles]
-            side = float(np.sqrt(3.0) * Rtri)
-            speed = side / float(total_time) if total_time > 0 else 0.0
-            tri_vel = []
-            for k in range(3):
-                p0 = np.array(tri_pos[k])
-                p1 = np.array(tri_pos[(k + 1) % 3])
-                d = p1 - p0
-                norm = float(np.hypot(d[0], d[1]))
-                u = d / norm if norm > 0 else np.array([1.0, 0.0])
-                v = (speed * u).tolist()
-                tri_vel.append((float(v[0]), float(v[1])))
-            if args.triangle_mass is not None:
-                mtri = [float(args.triangle_mass)] * 3
-            elif args.mass_min is not None and args.mass_max is not None:
-                mtri_val = float(np.sqrt(float(args.mass_min) * float(args.mass_max)))
-                mtri = [mtri_val] * 3
-            elif args.mass is not None:
-                mtri = [float(args.mass)] * 3
-            else:
-                mtri_val = float(np.mean(masses)) if len(masses) > 0 else 6.0e24
-                mtri = [mtri_val] * 3
-            positions.extend(tri_pos)
-            velocities.extend(tri_vel)
-            masses.extend(mtri)
+    Image.fromarray(points_uint8).save(points_file)
+    Image.fromarray(painting_uint8).save(painting_file)
 
-        s = stellar_system(positions, velocities, masses)
-        # Fix plot limits to 2x spread for random mode
-        if args.random:
-            R = float(args.spread)
-            s.fixed_limits = (-2.0 * R, 2.0 * R, -2.0 * R, 2.0 * R)
-        # Snapshot mode: override total_time/steps and save multiple frames from one run
-        if args.snapshots:
-            Nsnap = int(args.snapshots)
-            interval = args.snapshot_interval if args.snapshot_interval is not None else args.time
-            if interval is None:
-                raise SystemExit("--snapshots requires --snapshot-interval or --time to specify base t")
-            interval = float(interval)
-            steps_per = int(args.steps_per_snapshot)
-            total_time = interval * Nsnap
-            steps = steps_per * Nsnap
-            s.change(total_time, steps)
-
-            # Save each snapshot at k * interval
-            for k in range(1, Nsnap + 1):
-                max_frame = k * steps_per
-                if save:
-                    prefix = f"painting_{ts}_" if ts else "painting_"
-                    fname = os.path.join(save_dir, f"{prefix}{i+1:02d}_k{k:02d}.png")
-                    s.trajectory(save_path=fname, dpi=dpi, figsize=(width, height), max_frame=max_frame)
-                else:
-                    s.trajectory(max_frame=max_frame)
-        else:
-            s.change(total_time, steps)
-            if save:
-                prefix = f"painting_{ts}_" if ts else "painting_"
-                fname = os.path.join(save_dir, f"{prefix}{i+1:02d}.png")
-                s.trajectory(save_path=fname, dpi=dpi, figsize=(width, height))
-            else:
-                if args.animate:
-                    s.animate_build(interval=args.interval)
-                else:
-                    s.trajectory()
+    print(f"✓ Created paintings: {points_file}, {painting_file}")
+    return points_file, painting_file
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    import glob
+
+    parser = argparse.ArgumentParser(
+        description="Create gravitational paintings from simulation files")
+    parser.add_argument("simulation", nargs='?', type=str, default=None,
+                       help="Path to simulation file (e.g., simulations/system_n5_seed123.npz). If not provided, processes all files in simulations/")
+    parser.add_argument("-r", "--resolution", type=int, default=2048,
+                       help="Image resolution (default: 2048)")
+
+    args = parser.parse_args()
+
+    if args.simulation:
+        # Process single file
+        create_painting_from_simulation(args.simulation, resolution=args.resolution)
+    else:
+        # Process all simulation files
+        sim_files = glob.glob("simulations/*.npz")
+        if not sim_files:
+            print("No simulation files found in simulations/")
+            print("Generate some with: python3 generate_random_system.py")
+        else:
+            print(f"Processing {len(sim_files)} simulation(s)...")
+            for sim_file in sim_files:
+                create_painting_from_simulation(sim_file, resolution=args.resolution)
